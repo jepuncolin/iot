@@ -3,6 +3,8 @@
 //#include <DHT.h>
 #include <string.h>
 #include <Wire.h>
+#include <Wire.h>
+#include <RTClib.h>
 #include <LiquidCrystal_I2C.h>
 #include <BH1750FVI.h>
 #include <LSD.h>
@@ -10,6 +12,7 @@
 #include <LBTServer.h>
 #include <LWiFi.h>
 #include <LWiFiClient.h>
+#include <LWiFiUDP.h>
 #include <LDateTime.h>
 #include <LGPS.h>
 #include <HttpClient.h>
@@ -83,7 +86,7 @@ bool bWifi;
 char web_server[100];
 int port = 80;
 String postPage;
-char btName[] = "bt-smartfarm";
+char btName[4] = "m01";
 unsigned int dustPin = 2; //設定土壤溼度計
 unsigned int analogValue = 0;
 unsigned int blue_led = 4;
@@ -104,7 +107,8 @@ LFile configFile;
 /*紀錄執行歷程*/
 LFile logFile;
 LWiFiClient httpClient;
-//HttpClient http(httpClient);
+RTC_DS1307 rtc;
+
 
 String readConfig(String configName) {
   if (!initsd) return "";
@@ -131,6 +135,7 @@ String readConfig(String configName) {
     //iniFile.close();
 
   }
+  return "";
 }
 
 
@@ -150,6 +155,11 @@ void sensor_next_time(int index) {
 
 /*啟動 blue tooth */
 bool initBluetooth() {
+  String str = readConfig("btName");
+  if (str != "") {
+    str.toCharArray(btName, 3);
+  }
+ 
   if (LBTServer.begin((uint8_t*)btName)) {
     printToSerial("BT server is started.", true);
     return true;
@@ -176,6 +186,8 @@ bool initWiFi() {
     return false;
   }
 }
+
+
 
 /*連線到 mediatek cloud sandbox */
 bool connectWCS() {
@@ -232,6 +244,18 @@ bool initLcd() {
   return true;
 }
 
+/*初始時鐘*/
+bool initRTCTime() {
+DateTime now = rtc.now();
+tm.year = now.year();
+tm.mon = now.month();
+tm.day = now.day();;
+tm.hour = now.hour();;
+tm.min = now.minute();
+tm.sec = now.second();
+LDateTime.setTime(&tm);
+}
+
 /*
   bool intiTemperature() {
   dht.begin();
@@ -260,12 +284,14 @@ float getDefaultCor(String str) {
 
 /*設定執行環境參數*/
 void setenv() {
-  printToSerial("call setenv", true);
+  Serial.println("call setenv");
+  //printToSerial("call setenv", true);
   String str;
   str = readConfig("debug");
-  if (str == "1") {
+  if (str == "") {
     isDebug = true;
   }
+
   str = readConfig("temp");
   configs[0] = getDefaultInt(str);
   str = readConfig("temp_p");
@@ -280,6 +306,7 @@ void setenv() {
   correctValue[2] = getDefaultCor(str);
   str = readConfig("soil");
   configs[3] = getDefaultInt(str);
+
   str = readConfig("soil_p");
   correctValue[3] = getDefaultCor(str);
   str = readConfig("aprs");
@@ -291,7 +318,9 @@ void setenv() {
   str = readConfig("press_p");
   correctValue[6] = getDefaultCor(str);
   str = readConfig("batch");
-  configs[5] = str.toInt();
+  if (str!="") {
+    configs[5] = str.toInt();
+  }
   if (configs[5] == 1) {
     isBatch = true;
   } else {
@@ -299,28 +328,33 @@ void setenv() {
   }
 
   str = readConfig("wifi");
-  configs[7] = str.toInt();
+  if (str!="") {
+    configs[7] = str.toInt();
+  }
   str = readConfig("gprs");
-  configs[8] = str.toInt();
-
+  if (str!="") {
+    configs[8] = str.toInt();
+  }
   str = readConfig("url");
   if (str != "") {
     str.toCharArray(web_server, str.length());
   }
   str = readConfig("port");
-  port = str.toInt();
+  if (str!="") {
+    port = str.toInt();
+  }  
   if (port == 0) {
     port = 80;
   }
 
   str = readConfig("p_soil");
-  dustPin = str.toInt();
-
+  if (str!="") {
+    dustPin = str.toInt();
+  }
   str = readConfig("page");
   if (str != "") {
     postPage = str;
   }
-
   str = readConfig("upload_time");
   if (str != "") {
     upload_time = str;
@@ -336,7 +370,7 @@ void setenv() {
 
   reset_next_time();
 
-  printToSerial("end call setenv", true);
+  Serial.println("end call setenv");
 
 }
 
@@ -352,6 +386,9 @@ void setup() {
   pinMode(blue_led, OUTPUT);
   Serial.begin(9600);
   Serial1.begin(9600);
+  Serial.println("system start");
+  rtc.begin();
+  
   //setSyncProvider(RTC.get);
   //xbee.begin(9600);
   initLcd();
@@ -367,14 +404,15 @@ void setup() {
     openLogFile(true, FILE_WRITE);
     setenv();
     /*若是啟用 debug 模式*/
-    //isDebug=true;
+    isDebug=false;
+    
     if (isDebug) {
       while (!Serial) {
         ; // wait for serial port to connect. Needed for Leonardo only
       }
     }
-
     printToSerial("config read ok", true);
+    initRTCTime();
     //printToSerial(web_server);
   }
   /*
@@ -391,6 +429,7 @@ void setup() {
 
   if (configs[7] == 1) {
     bWifi=initWiFi();
+    //setSyncProvider(getNtpTime);
   }
   
   printToSerial("start Date:" + currentDate(false), true);
@@ -480,7 +519,8 @@ void loop() {
     commandStr = "";
     LBTServer.accept(5);
   }
-  //delay(1000);
+  //printToSerial(currentTime(),false);  
+  delay(1000);
 }
 
 void blueLed(bool bOn) {
@@ -847,33 +887,46 @@ void setConfig() {
 }
 
 void setRTCTime() {
+//  if (!rtc.isrunning()) {  
+//    printToSerial("RTC is NOT running!", true);
+//    return;
+//  }
   printToSerial("start setting date&time", true);
   String svalue = "";
   svalue = getCommandValue(1); //year
+  unsigned int aYear=1970;
+  unsigned int aMonth=1;
+  unsigned int aDay=1;
+  unsigned int aHour=12;
+  unsigned int aMin=0;
+  unsigned int aSec=0; 
   if (svalue != "") {
-    tm.year = svalue.toInt();
+    aYear = svalue.toInt();// 從1970年開始算
   }
   svalue = getCommandValue(2); //month
   if (svalue != "") {
-    tm.mon = svalue.toInt();
+    aMonth = svalue.toInt();
   }
   svalue = getCommandValue(3); //Day
   if (svalue != "") {
-    tm.day = svalue.toInt();
+    aDay = svalue.toInt();
   }
   svalue = getCommandValue(4); //Hour
   if (svalue != "") {
-    tm.hour = svalue.toInt();
+    aHour = svalue.toInt();
   }
   svalue = getCommandValue(5); //Minute
   if (svalue != "") {
-    tm.min = svalue.toInt();
+    aMin = svalue.toInt();
   }
   svalue = getCommandValue(6); //Second
   if (svalue != "") {
-    tm.sec = svalue.toInt();
+    aSec = svalue.toInt();
   }
-  LDateTime.setTime(&tm);
+  rtc.adjust(DateTime(aYear, aMonth, aDay, aHour, aMin, aSec));
+  //RTC.set(makeTime(rtctm));   
+  initRTCTime();
+  //LDateTime.setTime(&tm);
   printToSerial("setting date&time OK!", true);
   delay(1000);
   printToSerial("Current Date:" + currentDate(false), true);
